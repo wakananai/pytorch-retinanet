@@ -163,6 +163,8 @@ class ResNet(nn.Module):
     def __init__(self, num_classes, block, layers):
         self.inplanes = 64
         super(ResNet, self).__init__()
+        # [raw] add conv0 to adopt 1 to 3 channel
+        self.conv0 = nn.Conv2d(1, 3, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
@@ -237,12 +239,12 @@ class ResNet(nn.Module):
             img_batch, annotations = inputs
         else:
             img_batch = inputs
-            
-        x = self.conv1(img_batch)
+        # [raw] add conv0 to adopt 1 to 3 channel
+        x = self.conv0(img_batch)
+        x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
         x1 = self.layer1(x)
         x2 = self.layer2(x1)
         x3 = self.layer3(x2)

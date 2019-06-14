@@ -6,6 +6,7 @@ import copy
 import pdb
 import time
 import argparse
+from tqdm import tqdm
 
 import sys
 import cv2
@@ -29,21 +30,30 @@ def main(args=None):
 	parser.add_argument('--coco_path', help='Path to COCO directory')
 	parser.add_argument('--csv_classes', help='Path to file containing class list (see readme)')
 	parser.add_argument('--csv_val', help='Path to file containing validation annotations (optional, see readme)')
-
 	parser.add_argument('--model', help='Path to model (.pt) file.')
 
+	# add save image dir
+	parser.add_argument('--save_dir',default='result/')
+
 	parser = parser.parse_args(args)
+
+	if not os.path.exists(parser.save_dir):
+		os.makedirs(parser.save_dir)
 
 	if parser.dataset == 'coco':
 		dataset_val = CocoDataset(parser.coco_path, set_name='val2017', transform=transforms.Compose([Normalizer(), Resizer()]))
 	elif parser.dataset == 'csv':
-		dataset_val = CSVDataset(train_file=parser.csv_train, class_list=parser.csv_classes, transform=transforms.Compose([Normalizer(), Resizer()]))
+		# code change "csv_train" -> "csv_val"
+		# take away Normalizder for raw
+		dataset_val = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes, transform=transforms.Compose([Resizer()]))
+		dataset_val_no_resize = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes, transform=None)
+		# dataset_val = CSVDataset(train_file=parser.csv_val, class_list=parser.csv_classes, transform=transforms.Compose([Normalizer(), Resizer()]))
 	else:
 		raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
-
-	sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
-	dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collater, batch_sampler=sampler_val)
-
+	# not use the AspectRatioBasedSampler
+	# sampler_val = AspectRatioBasedSampler(dataset_val, batch_size=1, drop_last=False)
+	dataloader_val = DataLoader(dataset_val, num_workers=1, collate_fn=collater)# , batch_sampler=sampler_val)
+	dataloader_val_no_resize = DataLoader(dataset_val_no_resize, num_workers=1, collate_fn=collater)
 	retinanet = torch.load(parser.model)
 
 	use_gpu = True
@@ -61,22 +71,31 @@ def main(args=None):
 		cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 0), 2)
 		cv2.putText(image, caption, (b[0], b[1] - 10), cv2.FONT_HERSHEY_PLAIN, 1, (255, 255, 255), 1)
 
-	for idx, data in enumerate(dataloader_val):
-
+	for idx, data in enumerate(tqdm(dataloader_val)):
 		with torch.no_grad():
 			st = time.time()
 			scores, classification, transformed_anchors = retinanet(data['img'].cuda().float())
 			print('Elapsed time: {}'.format(time.time()-st))
 			idxs = np.where(scores>0.5)
-			img = np.array(255 * unnormalize(data['img'][0, :, :, :])).copy()
 
+			# [raw] remove the process on jpg
+			img = np.array(data['img'][0, :, :, :] * 255 * 3).copy()
 			img[img<0] = 0
 			img[img>255] = 255
-
 			img = np.transpose(img, (1, 2, 0))
 
-			img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+			# img = np.array(255 * unnormalize(data['img'][0, :, :, :])).copy()
 
+			# img[img<0] = 0
+			# img[img>255] = 255
+
+			# img = np.transpose(img, (1, 2, 0))
+
+
+			# raw image is one channel
+			# img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+			img = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_GRAY2RGB)
+	
 			for j in range(idxs[0].shape[0]):
 				bbox = transformed_anchors[idxs[0][j], :]
 				x1 = int(bbox[0])
@@ -85,14 +104,29 @@ def main(args=None):
 				y2 = int(bbox[3])
 				label_name = dataset_val.labels[int(classification[idxs[0][j]])]
 				draw_caption(img, (x1, y1, x2, y2), label_name)
-
 				cv2.rectangle(img, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
-				print(label_name)
+				# print(label_name)
 
-			cv2.imshow('img', img)
-			cv2.waitKey(0)
+			print(data['annot'].shape)
 
+			for ii in range(len(data['annot'][0])):
+				# draw the ground truth bounding box)
+				annotation = data['annot'][0][ii].data.cpu().numpy().astype(int)
+				# print(annotation)
+				x1 = annotation[0].astype(int)
+				y1 = annotation[1].astype(int)
+				x2 = annotation[2].astype(int)
+				y2 = annotation[3].astype(int)
+				label_name = dataset_val.labels[annotation[4]]
+				# print(x1,x2,y1,y2,label_name)
+				draw_caption(img, (x1, y1, x2, y2), label_name)
+				cv2.rectangle(img, (x1, y1), (x2, y2), color=(255, 0, 0), thickness=2)
+			
+			# cv2.imshow('img', img)
+			# cv2.waitKey(0)
 
+			# save image
+			cv2.imwrite(os.path.join(parser.save_dir, '%d.png' %idx), img)
 
 if __name__ == '__main__':
  main()

@@ -19,6 +19,7 @@ import skimage
 
 from PIL import Image
 
+import rawpy
 
 class CocoDataset(Dataset):
     """Coco dataset."""
@@ -203,7 +204,12 @@ class CSVDataset(Dataset):
 
     def __getitem__(self, idx):
 
-        img = self.load_image(idx)
+        
+        # load raw image
+        # [2018.1.27] change to load_raw_image_sb for exp [in tmux-session train_raw_nr_sb]
+        # img = self.load_raw_image_sb(idx)
+        img = self.load_raw_image(idx)
+        # img = self.load_image(idx)
         annot = self.load_annotations(idx)
         sample = {'img': img, 'annot': annot}
         if self.transform:
@@ -218,7 +224,37 @@ class CSVDataset(Dataset):
             img = skimage.color.gray2rgb(img)
 
         return img.astype(np.float32)/255.0
+    
+    # load raw image
+    def load_raw_image(self, image_index):
+        img = rawpy.imread(self.image_names[image_index])
+        img = img.raw_image
+        img = np.expand_dims(img,axis=2)
+        return img.astype(np.float32)/16383.0
 
+    # load raw image revised (2018.1.27)
+    # add [subtract black level]
+    def load_raw_image_sb(self, image_index):
+        img = rawpy.imread(self.image_names[image_index])
+        img = img.raw_image.astype(np.float32)
+        img = np.maximum(img- 512, 0) / (16383 - 512)  # subtract the black level
+        img = np.expand_dims(img,axis=2)
+        return img  
+    
+    # the function is modified from 
+    # [https://github.com/cchen156/Learning-to-See-in-the-Dark/blob/master/train_Sony.py]
+    def pack_raw(self, img):
+    # pack Bayer image to 4 channels
+        img_shape = img.shape
+        H = img_shape[0]
+        W = img_shape[1]
+
+        out = np.concatenate((img[0:H:2, 0:W:2, :],
+                              img[0:H:2, 1:W:2, :],
+                              img[1:H:2, 1:W:2, :],
+                              img[1:H:2, 0:W:2, :]), axis=2)
+        return out
+        
     def load_annotations(self, image_index):
         # get ground truth annotations
         annotation_list = self.image_data[self.image_names[image_index]]
@@ -313,7 +349,9 @@ def collater(data):
     max_width = np.array(widths).max()
     max_height = np.array(heights).max()
 
-    padded_imgs = torch.zeros(batch_size, max_width, max_height, 3)
+    # [raw] padding_img channel = 1
+    # padded_imgs = torch.zeros(batch_size, max_width, max_height, 3)
+    padded_imgs = torch.zeros(batch_size, max_width, max_height, 1)
 
     for i in range(batch_size):
         img = imgs[i]
@@ -372,6 +410,36 @@ class Resizer(object):
 
         return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
 
+# modify by Resizer (without rescale part)
+class ImageToTensor(object):
+    """Convert ndarrays in sample to Tensors."""
+
+    def __call__(self, sample, min_side=640, max_side=928):
+        image, annots = sample['img'], sample['annot']
+
+        rows, cols, cns = image.shape
+
+
+        pad_w = 32 - rows%32
+        pad_h = 32 - cols%32
+
+        new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
+        new_image[:rows, :cols, :] = image.astype(np.float32)
+
+
+        # calculate scale
+        rows, cols, cns = new_image.shape
+        smallest_side = min(rows, cols)
+        scale = min_side / smallest_side
+        largest_side = max(rows, cols)
+
+        if largest_side * scale > max_side:
+            scale = max_side / largest_side
+
+        # transform the annotation
+        annots[:, :4] *= scale
+        
+        return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
 
 class Augmenter(object):
     """Convert ndarrays in sample to Tensors."""
